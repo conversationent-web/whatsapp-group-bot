@@ -49,7 +49,6 @@ client.on('ready', () => {
 
 client.on('authenticated', () => { status = 'Authenticated! Loading chats...'; });
 
-// ===== YOUR CONFIG - SA VERSION - LESS STRICT =====
 const WARN_FILE = './warnings.json';
 let warnings = fs.existsSync(WARN_FILE) ? JSON.parse(fs.readFileSync(WARN_FILE)) : {};
 
@@ -96,8 +95,14 @@ client.on('message', async msg => {
     const chat = await msg.getChat();
     if (!chat.isGroup) return;
     const lower = msg.body.toLowerCase();
+
+    // FIXED: get contact first, then check
+    const contact = await msg.getContact();
+    const contactId = contact.id._serialized;
+    const participant = chat.participants.find(p => p.id._serialized === contactId);
+    const isAdmin = participant?.isAdmin || false;
+
     if (LINK_REGEX.test(lower)) {
-        const isAdmin = chat.participants.find(p => p.id._serialized === (await msg.getContact()).id._serialized)?.isAdmin;
         if (!(CONFIG.allowLinksFromAdmins && isAdmin)) {
             await punish(chat, msg, 'Group/Channel link not allowed'); return;
         }
