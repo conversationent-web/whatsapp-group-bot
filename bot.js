@@ -20,12 +20,11 @@ app.get('/', async (req, res) => {
         const qrImage = await QRCode.toDataURL(lastQR);
         res.send(`
             <div style="font-family:sans-serif;text-align:center;margin-top:30px">
-                <h1>THUSO BOT - FINAL</h1>
+                <h1>THUSO BOT - RULES FIXED</h1>
                 <h2>📱 Scan QR with WhatsApp</h2>
-                <p>WhatsApp > Linked Devices > Link a Device</p>
                 <img src="${qrImage}" style="width:300px;border:10px solid #000;padding:10px"/>
                 <p><b>Status:</b> ${status}</p>
-                <p>4 Rules Active - @everyone ALLOWED</p>
+                <p>!rules now works for everyone</p>
             </div>
         `);
     } catch { res.send('Error generating QR'); }
@@ -60,7 +59,6 @@ function start12HourNotifier(sock) {
             try { await sock.sendMessage(groupId, { text: message }); } catch {}
         }
     }, 12 * 60 * 60 * 1000);
-
     setTimeout(async () => {
         const message = "🤖 BOT BY THUSO ACTIVATED ✅\nBot is now ONLINE!";
         for (let groupId of activeGroups) {
@@ -88,7 +86,7 @@ async function startBot() {
             qrcode.generate(qr, { small: true });
         }
         if (connection === 'open') {
-            status = '✅ THUSO BOT ONLINE - 4 RULES ACTIVE';
+            status = '✅ THUSO BOT ONLINE - !rules FIXED';
             lastQR = '';
             console.log(status);
             try {
@@ -113,14 +111,22 @@ async function startBot() {
         activeGroups.add(jid);
 
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || '';
-        const lower = text.toLowerCase();
+        const lower = text.toLowerCase().trim();
         const userId = msg.key.participant || msg.key.remoteJid;
-        const userShort = userId.split('@')[0].split(':')[0];
 
-        // Get contextInfo for group mentions / status mentions
-        const contextInfo = msg.message.extendedTextMessage?.contextInfo || msg.message.imageMessage?.contextInfo || msg.message.videoMessage?.contextInfo || {};
+        const contextInfo = msg.message.extendedTextMessage?.contextInfo || {};
         const groupMentions = contextInfo.groupMentions || [];
-        const mentionedJid = contextInfo.mentionedJid || [];
+
+        // FIXED: !rules works for EVERYONE, before any admin checks
+        if (lower === '!rules' || lower === '!rule' || lower === 'rules') {
+            console.log(`!rules requested by ${userId} in ${jid}`);
+            const rulesText = `📜 *GROUP RULES - THUSO BOT*\n\n1️⃣ ${RULES[1]}\n\n2️⃣ ${RULES[2]}\n\n3️⃣ ${RULES[3]}\n\n4️⃣ ${RULES[4]}\n\n🤖 BOT BY THUSO ACTIVATED`;
+            try {
+                await sock.sendMessage(jid, { text: rulesText });
+                console.log('Sent rules');
+            } catch (e) { console.log('Failed to send rules:', e.message); }
+            return;
+        }
 
         let isAdmin = false;
         let isBotAdmin = false;
@@ -132,13 +138,7 @@ async function startBot() {
             isBotAdmin = botParticipant?.admin === 'admin' || botParticipant?.admin === 'superadmin';
         } catch {}
 
-        if (!isBotAdmin) return;
         if (isAdmin) {
-            if (lower === '!rules') {
-                const rulesText = `📜 *GROUP RULES - THUSO BOT*\n\n1️⃣ ${RULES[1]}\n\n2️⃣ ${RULES[2]}\n\n3️⃣ ${RULES[3]}\n\n4️⃣ ${RULES[4]}\n\n🤖 BOT BY THUSO ACTIVATED`;
-                await sock.sendMessage(jid, { text: rulesText });
-                return;
-            }
             if (lower.startsWith('!addbot ')) {
                 const num = lower.split(' ')[1].replace(/[^0-9]/g, '');
                 if (num) {
@@ -146,7 +146,7 @@ async function startBot() {
                     if (!OTHER_BOTS.includes(botId)) {
                         OTHER_BOTS.push(botId);
                         saveOtherBots();
-                        await sock.sendMessage(jid, { text: `✅ Added ${num} to other bots blocklist` });
+                        await sock.sendMessage(jid, { text: `✅ Added ${num} to blocklist` });
                     }
                 }
                 return;
@@ -159,20 +159,26 @@ async function startBot() {
             return;
         }
 
-        // RULE 2: Other bots instant delete
+        if (!isBotAdmin) {
+            console.log('Bot not admin, cannot delete');
+            return;
+        }
+
+        // RULE 2: Other bots
         if (OTHER_BOTS.includes(userId) || OTHER_BOTS.includes(userId.split(':')[0] + '@s.whatsapp.net')) {
             try { await sock.sendMessage(jid, { delete: msg.key }); } catch {}
             return;
         }
 
-        // RULE 1: Links / websites / ads
+        // RULE 1: Links/ads
         if (AD_REGEX.test(lower)) {
             try {
                 await sock.sendMessage(jid, { delete: msg.key });
+                const userShort = userId.split('@')[0].split(':')[0];
                 warnings[userId] = (warnings[userId] || 0) + 1;
                 saveWarnings();
                 if (warnings[userId] >= 3) {
-                    await sock.sendMessage(jid, { text: `🚫 @${userShort} removed - Rule 1: No links/websites/ads`, mentions: [userId] });
+                    await sock.sendMessage(jid, { text: `🚫 @${userShort} removed - Rule 1`, mentions: [userId] });
                     try { await sock.groupParticipantsUpdate(jid, [userId], 'remove'); } catch {}
                     delete warnings[userId]; saveWarnings();
                 } else {
@@ -182,22 +188,13 @@ async function startBot() {
             return;
         }
 
-        // RULE 4: Delete mentions of group in member status (EXCLUDES @everyone/@all)
-        // Only triggers if groupMentions exists (status mention of group), NOT for @everyone mentions
-        // @everyone / @all is mentionedJid with many users - we EXCLUDE that now as requested
+        // RULE 4: Status mentions of group
         if (groupMentions.length > 0) {
-            // Check if this is a status mention (has groupMentions)
-            const isStatusMention = groupMentions.some(gm => gm.groupJid === jid || gm.groupJid?.includes(jid.split('@')[0]));
-            // Also check if the message is a status re-share that tags group
-            if (isStatusMention || groupMentions.length > 0) {
-                // EXCLUDE @everyone/@all - we already excluded by not checking mentionedJid length
-                try {
-                    await sock.sendMessage(jid, { delete: msg.key });
-                    console.log(`[RULE 4] Deleted status mention of group from ${userShort}`);
-                    await sock.sendMessage(jid, { text: `⚠️ @${userShort} Rule 4: No mentioning group in status`, mentions: [userId] });
-                } catch {}
-                return;
-            }
+            try {
+                await sock.sendMessage(jid, { delete: msg.key });
+                const userShort = userId.split('@')[0].split(':')[0];
+                await sock.sendMessage(jid, { text: `⚠️ @${userShort} Rule 4: No mentioning group in status`, mentions: [userId] });
+            } catch {}
         }
     });
 }
