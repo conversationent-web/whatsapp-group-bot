@@ -7,47 +7,67 @@ const fs = require('fs');
 const P = require('pino');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 let lastQR = '';
-let status = 'Starting...';
+let status = 'Starting THUSO BOT...';
+let activeGroups = new Set();
 
 app.get('/', async (req, res) => {
     if (!lastQR) {
-        return res.send(`<h2>${status}</h2><p>Refresh in 5 sec</p><script>setTimeout(()=>location.reload(),5000)</script>`);
+        return res.send(`<html><body style="font-family:sans-serif;text-align:center;margin-top:50px"><h1>${status}</h1><p>Active Groups: ${activeGroups.size}</p><p>Rules: 1) No links/ads 2) No other bots 3) 12h notify 4) Status mentions</p><p>Refresh in 5 sec</p><script>setTimeout(()=>location.reload(),5000)</script></body></html>`);
     }
     try {
         const qrImage = await QRCode.toDataURL(lastQR);
         res.send(`
             <div style="font-family:sans-serif;text-align:center;margin-top:30px">
-                <h2>📱 Scan this QR with WhatsApp</h2>
+                <h1>THUSO BOT - FINAL</h1>
+                <h2>📱 Scan QR with WhatsApp</h2>
                 <p>WhatsApp > Linked Devices > Link a Device</p>
                 <img src="${qrImage}" style="width:300px;border:10px solid #000;padding:10px"/>
-                <p>Status: ${status}</p>
+                <p><b>Status:</b> ${status}</p>
+                <p>4 Rules Active - @everyone ALLOWED</p>
             </div>
         `);
     } catch { res.send('Error generating QR'); }
 });
 
-app.listen(PORT, () => console.log(`Web QR server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`THUSO BOT running on port ${PORT}`));
+
+const RULES = {
+    1: "Remove/Delete group links, websites, & other advertisement misconduct purposes",
+    2: "Delete messages from other bots (no warning) instantly remove them",
+    3: "Notify every 12 hours 'BOT BY THUSO ACTIVATED'",
+    4: "Delete mentions the group in a member status (EXCLUDES @everyone/@all in chat)"
+};
+
+const AD_REGEX = /(https?:\/\/|www\.|chat\.whatsapp\.com|whatsapp\.com\/channel|wa\.me\/|t\.me\/|telegram\.me|discord\.gg|discord\.com\/invite|\.com|\.net|\.org|\.co\.za|\.xyz|\.online|bit\.ly|tinyurl)/i;
+
+let OTHER_BOTS = [];
+const OTHER_BOTS_FILE = './other_bots.json';
+if (fs.existsSync(OTHER_BOTS_FILE)) {
+    try { OTHER_BOTS = JSON.parse(fs.readFileSync(OTHER_BOTS_FILE)); } catch {}
+}
+function saveOtherBots() { fs.writeFileSync(OTHER_BOTS_FILE, JSON.stringify(OTHER_BOTS, null, 2)); }
 
 const WARN_FILE = './warnings.json';
 let warnings = fs.existsSync(WARN_FILE) ? JSON.parse(fs.readFileSync(WARN_FILE)) : {};
-
-const LINK_REGEX = /(chat\.whatsapp\.com|whatsapp\.com\/channel|wa\.me\/|t\.me\/|telegram\.me|discord\.gg|discord\.com\/invite)/i;
-const NSFW_WORDS = ['porn','xxx','onlyfans','xvideos','xnxx','pornhub','xhamster','nudes','nude pic','sex video','amanyala','ucansi','thumela amanyala','mzansi porn','mzansi nudes','sex'];
-const SPAM_TRACKER = new Map();
-
-function isSpam(userId, message) {
-    const now = Date.now();
-    let history = SPAM_TRACKER.get(userId) || [];
-    history = history.filter(t => now - t < 15000);
-    history.push(now);
-    SPAM_TRACKER.set(userId, history);
-    if (history.length > 8) return 'Flood';
-    if (message.length > 700) return 'Too long';
-    return false;
-}
 function saveWarnings() { fs.writeFileSync(WARN_FILE, JSON.stringify(warnings, null, 2)); }
+
+function start12HourNotifier(sock) {
+    setInterval(async () => {
+        const message = "🤖 BOT BY THUSO ACTIVATED ✅\n\nRules Active:\n1️⃣ No group links / websites / ads\n2️⃣ No other bots allowed\n3️⃣ Group protected 24/7\n4️⃣ No status mentions of group";
+        for (let groupId of activeGroups) {
+            try { await sock.sendMessage(groupId, { text: message }); } catch {}
+        }
+    }, 12 * 60 * 60 * 1000);
+
+    setTimeout(async () => {
+        const message = "🤖 BOT BY THUSO ACTIVATED ✅\nBot is now ONLINE!";
+        for (let groupId of activeGroups) {
+            try { await sock.sendMessage(groupId, { text: message }); } catch {}
+        }
+    }, 10000);
+}
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -66,16 +86,19 @@ async function startBot() {
             lastQR = qr;
             status = 'QR Ready - Scan now!';
             qrcode.generate(qr, { small: true });
-            console.log('QR Ready - Open your Render URL to scan');
         }
         if (connection === 'open') {
-            status = '✅ Bot is ONLINE and READY!';
+            status = '✅ THUSO BOT ONLINE - 4 RULES ACTIVE';
             lastQR = '';
             console.log(status);
+            try {
+                const chats = await sock.groupFetchAllParticipating();
+                activeGroups = new Set(Object.keys(chats));
+                start12HourNotifier(sock);
+            } catch {}
         }
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed, reconnecting:', shouldReconnect);
             if (shouldReconnect) startBot();
         }
     });
@@ -84,52 +107,97 @@ async function startBot() {
         const msg = messages[0];
         if (!msg.message) return;
         const jid = msg.key.remoteJid;
-        if (!jid.endsWith('@g.us')) return; // only groups
+        if (!jid.endsWith('@g.us')) return;
         if (msg.key.fromMe) return;
+
+        activeGroups.add(jid);
 
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || '';
         const lower = text.toLowerCase();
         const userId = msg.key.participant || msg.key.remoteJid;
         const userShort = userId.split('@')[0].split(':')[0];
 
-        // Check group admin status
+        // Get contextInfo for group mentions / status mentions
+        const contextInfo = msg.message.extendedTextMessage?.contextInfo || msg.message.imageMessage?.contextInfo || msg.message.videoMessage?.contextInfo || {};
+        const groupMentions = contextInfo.groupMentions || [];
+        const mentionedJid = contextInfo.mentionedJid || [];
+
         let isAdmin = false;
+        let isBotAdmin = false;
         try {
             const groupMetadata = await sock.groupMetadata(jid);
             const participant = groupMetadata.participants.find(p => p.id === userId);
             isAdmin = participant?.admin === 'admin' || participant?.admin === 'superadmin';
+            const botParticipant = groupMetadata.participants.find(p => p.id === sock.user.id);
+            isBotAdmin = botParticipant?.admin === 'admin' || botParticipant?.admin === 'superadmin';
         } catch {}
 
-        if (isAdmin) return; // admins immune
-
-        let reason = null;
-        if (LINK_REGEX.test(lower)) reason = 'Group/Channel link not allowed';
-        else if (NSFW_WORDS.some(w => lower.includes(w))) reason = 'NSFW content';
-        else {
-            const spam = isSpam(userId, text);
-            if (spam) reason = `Spam: ${spam}`;
-        }
-
-        if (!reason) return;
-
-        // Delete message
-        try {
-            await sock.sendMessage(jid, { delete: msg.key });
-            console.log(`Deleted ${reason} from ${userShort}`);
-        } catch (e) {
-            console.log('Failed to delete - Bot must be ADMIN');
+        if (!isBotAdmin) return;
+        if (isAdmin) {
+            if (lower === '!rules') {
+                const rulesText = `📜 *GROUP RULES - THUSO BOT*\n\n1️⃣ ${RULES[1]}\n\n2️⃣ ${RULES[2]}\n\n3️⃣ ${RULES[3]}\n\n4️⃣ ${RULES[4]}\n\n🤖 BOT BY THUSO ACTIVATED`;
+                await sock.sendMessage(jid, { text: rulesText });
+                return;
+            }
+            if (lower.startsWith('!addbot ')) {
+                const num = lower.split(' ')[1].replace(/[^0-9]/g, '');
+                if (num) {
+                    const botId = num + '@s.whatsapp.net';
+                    if (!OTHER_BOTS.includes(botId)) {
+                        OTHER_BOTS.push(botId);
+                        saveOtherBots();
+                        await sock.sendMessage(jid, { text: `✅ Added ${num} to other bots blocklist` });
+                    }
+                }
+                return;
+            }
+            if (lower === '!listbots') {
+                const list = OTHER_BOTS.map(b => b.split('@')[0]).join('\n') || 'No bots blocked';
+                await sock.sendMessage(jid, { text: `🚫 Blocked bots:\n${list}` });
+                return;
+            }
             return;
         }
 
-        warnings[userId] = (warnings[userId] || 0) + 1;
-        saveWarnings();
+        // RULE 2: Other bots instant delete
+        if (OTHER_BOTS.includes(userId) || OTHER_BOTS.includes(userId.split(':')[0] + '@s.whatsapp.net')) {
+            try { await sock.sendMessage(jid, { delete: msg.key }); } catch {}
+            return;
+        }
 
-        if (warnings[userId] >= 5) {
-            await sock.sendMessage(jid, { text: `🚫 @${userShort} removed after 5 warnings (${reason})`, mentions: [userId] });
-            try { await sock.groupParticipantsUpdate(jid, [userId], 'remove'); } catch {}
-            delete warnings[userId]; saveWarnings();
-        } else {
-            await sock.sendMessage(jid, { text: `⚠️ @${userShort} Warning ${warnings[userId]}/5: ${reason}`, mentions: [userId] });
+        // RULE 1: Links / websites / ads
+        if (AD_REGEX.test(lower)) {
+            try {
+                await sock.sendMessage(jid, { delete: msg.key });
+                warnings[userId] = (warnings[userId] || 0) + 1;
+                saveWarnings();
+                if (warnings[userId] >= 3) {
+                    await sock.sendMessage(jid, { text: `🚫 @${userShort} removed - Rule 1: No links/websites/ads`, mentions: [userId] });
+                    try { await sock.groupParticipantsUpdate(jid, [userId], 'remove'); } catch {}
+                    delete warnings[userId]; saveWarnings();
+                } else {
+                    await sock.sendMessage(jid, { text: `⚠️ @${userShort} Warning ${warnings[userId]}/3 - Rule 1: No links/ads`, mentions: [userId] });
+                }
+            } catch {}
+            return;
+        }
+
+        // RULE 4: Delete mentions of group in member status (EXCLUDES @everyone/@all)
+        // Only triggers if groupMentions exists (status mention of group), NOT for @everyone mentions
+        // @everyone / @all is mentionedJid with many users - we EXCLUDE that now as requested
+        if (groupMentions.length > 0) {
+            // Check if this is a status mention (has groupMentions)
+            const isStatusMention = groupMentions.some(gm => gm.groupJid === jid || gm.groupJid?.includes(jid.split('@')[0]));
+            // Also check if the message is a status re-share that tags group
+            if (isStatusMention || groupMentions.length > 0) {
+                // EXCLUDE @everyone/@all - we already excluded by not checking mentionedJid length
+                try {
+                    await sock.sendMessage(jid, { delete: msg.key });
+                    console.log(`[RULE 4] Deleted status mention of group from ${userShort}`);
+                    await sock.sendMessage(jid, { text: `⚠️ @${userShort} Rule 4: No mentioning group in status`, mentions: [userId] });
+                } catch {}
+                return;
+            }
         }
     });
 }

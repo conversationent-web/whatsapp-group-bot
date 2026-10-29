@@ -1,6 +1,6 @@
 {
-  "name": "whatsapp-group-manager-baileys",
-  "version": "1.0.0",
+  "name": "thuso-bot-final-correct",
+  "version": "3.0.0",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
